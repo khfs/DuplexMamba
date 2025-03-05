@@ -1,0 +1,284 @@
+
+seed: 3407
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+project: DuplexMamba
+experiment: DuplexMamba_train_stage3-011
+output_folder: !ref results/<experiment>/<seed> 
+output_wer_folder: !ref <output_folder>/
+save_folder: !ref <output_folder>/save
+train_log: !ref <output_folder>/train_log.txt
+
+
+# URL for the Mamba model
+model_hub: model/state-spaces-mamba-2.8b-hf/
+mamba_folder: !ref <save_folder>/mamba-2.8b_checkpoint
+pretrained_save_folder: checkpoints/DuplexMamba_train_stage2-011/3407/save/ 
+
+# Data files
+data_folder: !PLACEHOLDER
+# If RIRS_NOISES dir exists in /localscratch/xxx_corpus/RIRS_NOISES
+# then data_folder_rirs should be /localscratch/xxx_corpus
+# otherwise the dataset will automatically be downloaded
+
+train_splits: ["train", "train-mls_eng_10k_5k"] 
+dev_splits: ["validation"]
+test_splits: ["test"]
+
+
+skip_prep: False
+
+train_csv: !ref <output_folder>/train.csv
+valid_csv: !ref <output_folder>/validation.csv
+test_csv: 
+    - !ref <output_folder>/test.csv
+
+skip_train: False
+no_lm: False
+
+# Training parameters
+# To make Transformers converge, the global bath size should be large enough.
+# The global batch size is computed as batch_size * n_gpus * grad_accumulation_factor.
+# Empirically, we found that this value should be >= 128.
+# Please, set your parameters accordingly.
+number_of_epochs: 10
+batch_size: 16 # This works for 2x GPUs with 32GB
+ctc_weight: 0.3
+grad_accumulation_factor: 8
+max_grad_norm: 5.0
+sorting: random
+num_workers: 4
+precision: bf16 # bf16, fp16 or fp32
+avg_checkpoints: 20 # Number of checkpoints to average for evaluation
+
+# stages related parameters
+lr_adam: 0.00003
+
+# Feature parameters
+sample_rate: 16000
+n_fft: 512
+n_mels: 80
+win_length: 32
+
+# This setup works well for A100 80GB GPU, adapts it to your needs.
+# Or turn it off (but training speed will decrease)
+dynamic_batching: True
+max_batch_length_train: 200
+max_batch_length_val: 100 # we reduce it as the beam is much wider (VRAM)
+num_bucket: 200
+shuffle: True # if true re-creates batches at each epoch shuffling examples.
+batch_ordering: random
+max_batch_ex: 5 
+
+ignore_index: -100
+
+num_beams: 3
+max_new_tokens: 512
+top_k: 45
+top_p: 0.9
+
+dynamic_batch_sampler_train:
+    max_batch_length: !ref <max_batch_length_train>
+    num_buckets: !ref <num_bucket>
+    shuffle: !ref <shuffle>
+    batch_ordering: !ref <batch_ordering>
+    max_batch_ex: !ref <max_batch_ex>
+
+dynamic_batch_sampler_valid:
+    max_batch_length: !ref <max_batch_length_val>
+    num_buckets: !ref <num_bucket>
+    shuffle: !ref <shuffle>
+    batch_ordering: !ref <batch_ordering>
+    max_batch_ex: !ref <max_batch_ex>
+
+# Dataloader options
+train_dataloader_opts:
+    batch_size: !ref <batch_size>
+    shuffle: True
+    num_workers: !ref <num_workers>
+
+valid_dataloader_opts:
+    batch_size: 1
+
+test_dataloader_opts:
+    batch_size: 4
+
+####################### Model parameters ###########################
+# Transformer dummy
+d_model: 512
+
+# Speech_Adapter
+LLM_embedding_size: 2560  # the hidden_size of Mamba-2.8B
+
+# Common
+nhead: 8
+num_encoder_layers: 12
+num_decoder_layers: 0
+d_ffn: 2048
+transformer_dropout: 0.1
+activation: !name:torch.nn.GELU
+output_neurons: 5000
+
+# Outputs
+blank_index: 0
+label_smoothing: 0.1
+pad_index: 0
+bos_index: 1
+eos_index: 2
+
+# Decoding parameters
+min_decode_ratio: 0.0
+max_decode_ratio: 1.0
+valid_search_interval: 3
+valid_beam_size: 10
+test_beam_size: 66
+lm_weight: 0.60
+ctc_weight_decode: 0.40
+
+# Mamba parameters
+d_state: 16
+expand: 2
+d_conv: 4
+bidirectional: True
+mamba_config:
+    d_state: !ref <d_state>
+    expand: !ref <expand>
+    d_conv: !ref <d_conv>
+    bidirectional: !ref <bidirectional>
+
+# Speech_Adapter parameters
+speech_encoder_ds_rate: 5  # Downsample rate (k)
+speech_encoder_hidden_size:  !ref <d_model> # Feature size per frame
+hidden_size: !ref <LLM_embedding_size> 
+speech_adapter_config:
+    speech_encoder_ds_rate: !ref <speech_encoder_ds_rate>
+    speech_encoder_hidden_size: !ref <speech_encoder_hidden_size>
+    hidden_size: !ref <hidden_size>
+
+############################## models ################################
+
+CNN: !new:speechbrain.lobes.models.convolution.ConvolutionFrontEnd
+    input_shape: (8, 10, 80)
+    num_blocks: 2
+    num_layers_per_block: 1
+    out_channels: (64, 32)
+    kernel_sizes: (3, 3)
+    strides: (2, 2)
+    residuals: (False, False)
+
+Transformer: !new:modules.TransformerASR.TransformerASR # yamllint disable-line rule:line-length
+    input_size: 640
+    tgt_vocab: 5000  
+    d_model: !ref <d_model>
+    nhead: !ref <nhead> # unused
+    num_encoder_layers: !ref <num_encoder_layers>
+    num_decoder_layers: !ref <num_decoder_layers>
+    d_ffn: !ref <d_ffn>
+    dropout: !ref <transformer_dropout>
+    activation: !ref <activation>
+    encoder_module: conmamba
+    attention_type: RelPosMHAXL
+    normalize_before: True
+    causal: False
+    mamba_config: !ref <mamba_config>
+
+Speech_Adapter: !new:modules.Adapter.EncoderProjectorConcat
+    config: !ref <speech_adapter_config>
+
+Mamba: !new:modules.huggingface_transformers.mamba.Mamba
+    source: !ref <model_hub>
+    freeze: False
+    save_path: !ref <mamba_folder>
+    max_new_tokens: !ref <max_new_tokens>
+    num_beams: !ref <num_beams>
+    top_k: !ref  <top_k>
+    top_p: !ref <top_p>
+
+
+normalize: !new:speechbrain.processing.features.InputNormalization
+    norm_type: global
+    update_until_epoch: 4
+
+modules:
+    CNN: !ref <CNN>
+    Transformer: !ref <Transformer>
+    Speech_Adapter: !ref <Speech_Adapter>
+    Mamba: !ref <Mamba>
+    normalize: !ref <normalize>
+
+pretrained_model: !new:torch.nn.ModuleList
+    - [!ref <CNN>, !ref <Transformer>, !ref <Speech_Adapter>, !ref <Mamba>]
+
+model: !new:torch.nn.ModuleList
+    - [!ref <CNN>, !ref <Transformer>, !ref <Speech_Adapter>, !ref <Mamba>]
+
+# define two optimizers here for two-stage training
+Adam: !name:torch.optim.AdamW
+    lr: !ref <lr_adam>
+    betas: (0.9, 0.98)
+    eps: 0.000000001
+
+
+log_softmax: !new:torch.nn.LogSoftmax
+    dim: -1
+
+ce_loss: !new:torch.nn.CrossEntropyLoss
+    ignore_index: !ref <ignore_index>
+    label_smoothing: !ref <label_smoothing>
+
+n_warmup_steps: !ref 15000 // <grad_accumulation_factor> 
+noam_annealing: !new:speechbrain.nnet.schedulers.NoamScheduler
+    lr_initial: !ref <lr_adam>
+    n_warmup_steps: !ref <n_warmup_steps>
+
+pretrained_checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <pretrained_save_folder>
+    recoverables:
+        model: !ref <pretrained_model>
+        noam_scheduler: !ref <noam_annealing>
+        normalizer: !ref <normalize>
+        counter: !ref <epoch_counter>
+
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <save_folder>
+    recoverables:
+        model: !ref <model>
+        noam_scheduler: !ref <noam_annealing>
+        normalizer: !ref <normalize>
+        counter: !ref <epoch_counter>
+
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+    limit: !ref <number_of_epochs>
+
+# Speed perturbation
+speed_changes: [95, 100, 105]  # List of speed changes for time-stretching
+
+speed_perturb: !new:speechbrain.augment.time_domain.SpeedPerturb
+    orig_freq: !ref <sample_rate>
+    speeds: !ref <speed_changes>
+
+
+compute_features: !new:speechbrain.lobes.features.Fbank
+    sample_rate: !ref <sample_rate>
+    n_fft: !ref <n_fft>
+    n_mels: !ref <n_mels>
+    win_length: !ref <win_length>
+
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <train_log>
+
+error_rate_computer: !name:speechbrain.utils.metric_stats.ErrorRateStats
+acc_computer: !name:speechbrain.utils.Accuracy.AccuracyStats
+
+bleu_4_computer: !name:speechbrain.utils.bleu.BLEUStats
+    max_ngram_order: 4
+
+use_wandb: False
+resume: False
+wandb_logger: !name:speechbrain.utils.train_logger.WandBLogger
+    initializer: !name:wandb.init
+    entity: lu9995801-harbin-institute-of-technology
+    project: !ref <project>
+    name: !ref <experiment>
+    dir: !ref <save_folder>
+    reinit: true
+    resume: !ref <resume>

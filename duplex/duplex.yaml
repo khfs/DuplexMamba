@@ -1,0 +1,150 @@
+# seed: 3407
+# __set_seed: !apply:torch.manual_seed [!ref <seed>]
+project: DuplexMamba
+experiment: DuplexMamba_inference
+output_folder: !ref results/<experiment>/
+output_wer_folder: !ref <output_folder>/
+save_folder: !ref <output_folder>/save
+wav_path: !ref example/rlhf-57762.flac
+
+# URL for the Mamba model
+model_hub: model/state-spaces-mamba-2.8b-hf/
+mamba_folder: !ref <save_folder>/mamba-2.8b_checkpoint
+pretrained_save_folder: checkpoints/DuplexMamba_train_stage4-110/3407/save/
+
+sorting: random
+num_workers: 4
+precision: bf16 # bf16, fp16 or fp32
+
+# Feature parameters
+sample_rate: 16000
+n_fft: 512
+n_mels: 80
+win_length: 32
+
+ignore_index: -100
+
+num_beams: 3
+max_new_tokens: 512
+top_k: 45
+top_p: 0.9
+
+####################### Model parameters ###########################
+# Transformer dummy
+d_model: 512
+
+# Speech_Adapter
+LLM_embedding_size: 2560  # mamba-2.8b的hidden_size
+
+# Common
+nhead: 8
+num_encoder_layers: 12
+num_decoder_layers: 0
+d_ffn: 2048
+transformer_dropout: 0.1
+activation: !name:torch.nn.GELU
+output_neurons: 5000
+
+# Outputs
+blank_index: 0
+label_smoothing: 0.1
+pad_index: 0
+bos_index: 1
+eos_index: 2
+
+# Decoding parameters
+min_decode_ratio: 0.0
+max_decode_ratio: 1.0
+valid_search_interval: 3
+valid_beam_size: 10
+test_beam_size: 66
+lm_weight: 0.60
+
+# Mamba parameters
+d_state: 16
+expand: 2
+d_conv: 4
+bidirectional: True
+mamba_config:
+    d_state: !ref <d_state>
+    expand: !ref <expand>
+    d_conv: !ref <d_conv>
+    bidirectional: !ref <bidirectional>
+
+# Speech_Adapter parameters
+speech_encoder_ds_rate: 5  # Downsample rate (k)
+speech_encoder_hidden_size:  !ref <d_model> # Feature size per frame
+hidden_size: !ref <LLM_embedding_size> 
+speech_adapter_config:
+    speech_encoder_ds_rate: !ref <speech_encoder_ds_rate>
+    speech_encoder_hidden_size: !ref <speech_encoder_hidden_size>
+    hidden_size: !ref <hidden_size>
+
+############################## models ################################
+
+CNN: !new:speechbrain.lobes.models.convolution.ConvolutionFrontEnd
+    input_shape: (8, 10, 80)
+    num_blocks: 2
+    num_layers_per_block: 1
+    out_channels: (64, 32)
+    kernel_sizes: (3, 3)
+    strides: (2, 2)
+    residuals: (False, False)
+
+Transformer: !new:modules.TransformerASR.TransformerASR # yamllint disable-line rule:line-length
+    input_size: 640
+    # tgt_vocab: !ref <output_neurons>  # 如果在decoder后面接mamba要设为50280
+    tgt_vocab: 5000  # 只使用encoder的话这个参数没用
+    d_model: !ref <d_model>
+    nhead: !ref <nhead> # unused
+    num_encoder_layers: !ref <num_encoder_layers>
+    num_decoder_layers: !ref <num_decoder_layers>
+    d_ffn: !ref <d_ffn>
+    dropout: !ref <transformer_dropout>
+    activation: !ref <activation>
+    encoder_module: conmamba
+    attention_type: RelPosMHAXL
+    normalize_before: True
+    causal: False
+    mamba_config: !ref <mamba_config>
+
+Speech_Adapter: !new:modules.Adapter.EncoderProjectorConcat
+    config: !ref <speech_adapter_config>
+
+Mamba: !new:modules.huggingface_transformers.mamba_duplex_inference.Mamba
+    source: !ref <model_hub>
+    freeze: True
+    save_path: !ref <mamba_folder>
+    max_new_tokens: !ref <max_new_tokens>
+    num_beams: !ref <num_beams>
+    top_k: !ref  <top_k>
+    top_p: !ref <top_p>
+
+
+normalize: !new:speechbrain.processing.features.InputNormalization
+    norm_type: global
+    update_until_epoch: 4
+
+modules:
+    CNN: !ref <CNN>
+    Transformer: !ref <Transformer>
+    Speech_Adapter: !ref <Speech_Adapter>
+    Mamba: !ref <Mamba>
+    normalize: !ref <normalize>
+
+pretrained_model: !new:torch.nn.ModuleList
+    - [!ref <CNN>, !ref <Transformer>, !ref <Speech_Adapter>, !ref <Mamba>]
+
+model: !new:torch.nn.ModuleList
+    - [!ref <CNN>, !ref <Transformer>, !ref <Speech_Adapter>, !ref <Mamba>]
+
+pretrained_checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <pretrained_save_folder>
+    recoverables:
+        model: !ref <pretrained_model>
+
+compute_features: !new:speechbrain.lobes.features.Fbank
+    sample_rate: !ref <sample_rate>
+    n_fft: !ref <n_fft>
+    n_mels: !ref <n_mels>
+    win_length: !ref <win_length>
