@@ -2,8 +2,8 @@
 
 ## Architecture
 
-<img src="figures/DuplexMamba.png" alt="DuplexMamba" width="80%" align="middle">
-<img src="figures/duplex_decoding.png" alt="duplex_decoding" width="80%" align="middle">
+<img src="figures/DuplexMamba.png" alt="DuplexMamba" width="80%" align="center">
+<img src="figures/duplex_decoding.png" alt="duplex_decoding" width="80%" align="center">
 
 ## Prerequisites
 
@@ -30,7 +30,7 @@ You may need to install lower or higher versions of torch, torchaudio, causal-co
 
 
 ## Training
-<img src="figures/table1.png" alt="training_data" width="60%" align="middle">
+<img src="figures/table1.png" alt="training_data" width="60%" align="center">
 
 #### datasets 
 
@@ -75,7 +75,7 @@ python duplex_inference.py duplex/duplex.yaml --precision bf16
 
 ## A simple Case 
 
-<img src="figures/case_study.png" alt="case" width="75%" align="middle">
+<img src="figures/case_study.png" alt="case" width="75%" align="center">
 
 ## Acknowledgement
 
